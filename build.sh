@@ -2,11 +2,11 @@
 
 abort()
 {
-    cd -
+    popd > /dev/null 2>&1
     echo "-----------------------------------------------"
     echo "Kernel compilation failed! Exiting..."
     echo "-----------------------------------------------"
-    exit -1
+    exit 1
 }
 
 unset_flags()
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
             DTB_OPTION="$2"
             shift 2
             ;;
-        *)\
+        *)
             unset_flags
             exit 1
             ;;
@@ -55,23 +55,85 @@ CORES=`cat /proc/cpuinfo | grep -c processor`
 CLANG_DIR=$PWD/toolchain/clang_14
 PATH=$CLANG_DIR/bin:$PATH
 
+# Toolchain sources (clang-r450784d = Clang 14.0.6, Android 13).
+# The AOSP site is unreliable, so try several sources in this order:
+#   1) TOOLCHAIN_URL   - your own .tar.gz with bin/ and lib64/ at top level
+#   2) TOOLCHAIN_GIT   - GitHub repo containing the clang-r450784 tree
+#   3) TOOLCHAIN_LINARO - Linaro mirror of the AOSP repo (tag android-13.0.0_r13)
+# Override any of them from the environment if needed.
+TOOLCHAIN_URL="${TOOLCHAIN_URL:-}"
+TOOLCHAIN_GIT="${TOOLCHAIN_GIT:-https://github.com/gmw-project/android_prebuilts_clang_host_linux-x86_clang-r450784}"
+TOOLCHAIN_LINARO="${TOOLCHAIN_LINARO:-https://android-git.linaro.org/platform/prebuilts/clang/host/linux-x86.git}"
+
 # Check the compiler and its runtime library. A cancelled extraction may leave
 # clang-14 behind without lib64/libc++.so.1, which makes clang.real unusable.
-if [ ! -x "$CLANG_DIR/bin/clang-14" ] || \
-        [ ! -f "$CLANG_DIR/lib64/libc++.so.1" ]; then
+toolchain_ok()
+{
+    [ -x "$CLANG_DIR/bin/clang-14" ] && [ -f "$CLANG_DIR/lib64/libc++.so.1" ]
+}
+
+reset_clang_dir()
+{
+    rm -rf "$CLANG_DIR"
+    mkdir -p "$CLANG_DIR"
+}
+
+fetch_toolchain()
+{
+    local SRC
+    SRC=$(mktemp -d)
+
+    # 1) Own tarball
+    if [ -n "$TOOLCHAIN_URL" ]; then
+        echo "Trying TOOLCHAIN_URL..."
+        reset_clang_dir
+        if curl -fL "$TOOLCHAIN_URL" | tar xz -C "$CLANG_DIR" && toolchain_ok; then
+            rm -rf "$SRC"
+            return 0
+        fi
+    fi
+
+    # 2) GitHub repo
+    echo "Trying GitHub: $TOOLCHAIN_GIT"
+    reset_clang_dir
+    if git clone --depth 1 "$TOOLCHAIN_GIT" "$SRC/repo"; then
+        rm -rf "$SRC/repo/.git"
+        if [ -d "$SRC/repo/bin" ]; then
+            cp -a "$SRC/repo/." "$CLANG_DIR/"
+        else
+            cp -a "$SRC/repo"/clang-*/. "$CLANG_DIR/" 2>/dev/null
+        fi
+        if toolchain_ok; then
+            rm -rf "$SRC"
+            return 0
+        fi
+        echo "GitHub repo did not contain a complete toolchain."
+    fi
+
+    # 3) Linaro mirror (sparse checkout of just clang-r450784d)
+    echo "Trying Linaro mirror..."
+    reset_clang_dir
+    rm -rf "$SRC/repo"
+    if git clone --depth 1 --filter=blob:none --sparse \
+            --branch android-13.0.0_r13 "$TOOLCHAIN_LINARO" "$SRC/repo" \
+        && git -C "$SRC/repo" sparse-checkout set clang-r450784d; then
+        cp -a "$SRC/repo/clang-r450784d/." "$CLANG_DIR/"
+        if toolchain_ok; then
+            rm -rf "$SRC"
+            return 0
+        fi
+    fi
+
+    rm -rf "$SRC"
+    return 1
+}
+
+if ! toolchain_ok; then
     echo "-----------------------------------------------"
     echo "Toolchain missing or incomplete! Downloading..."
     echo "-----------------------------------------------"
-    rm -rf $CLANG_DIR
-    mkdir -p $CLANG_DIR
-    pushd $CLANG_DIR > /dev/null
-    TOOLCHAIN_ARCHIVE="clang-r450784d.tar.gz"
-    curl -fL "https://github.com/aosp-mirror/kernel_common$TOOLCHAIN_ARCHIVE" \
-        -o "$TOOLCHAIN_ARCHIVE" || abort
-    tar xf "$TOOLCHAIN_ARCHIVE" || abort
-    rm "$TOOLCHAIN_ARCHIVE"
-    echo "Cleaning up..."
-    popd > /dev/null
+    fetch_toolchain || abort
+    echo "Toolchain ready: $("$CLANG_DIR/bin/clang-14" --version | head -n1)"
 fi
 
 MAKE_ARGS="
@@ -116,7 +178,7 @@ r8s)
 ;;
 *)
     unset_flags
-    exit
+    exit 1
 esac
 
 if [[ "$RECOVERY_OPTION" == "y" ]]; then
