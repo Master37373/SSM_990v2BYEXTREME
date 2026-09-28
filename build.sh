@@ -66,7 +66,7 @@ if [ ! -x "$CLANG_DIR/bin/clang-14" ] || \
     mkdir -p $CLANG_DIR
     pushd $CLANG_DIR > /dev/null
     TOOLCHAIN_ARCHIVE="clang-r450784d.tar.gz"
-    curl -fL "https://gitgud.io/aosp/platform/prebuilts/clang-tools/-/tree/d5604b721818cb15290250a078ec3648517079ca$TOOLCHAIN_ARCHIVE" \
+    curl -fL "https://github.com/Kry9toN/clang$TOOLCHAIN_ARCHIVE" \
         -o "$TOOLCHAIN_ARCHIVE" || abort
     tar xf "$TOOLCHAIN_ARCHIVE" || abort
     rm "$TOOLCHAIN_ARCHIVE"
